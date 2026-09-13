@@ -10,8 +10,8 @@
 #define WIFI_SSID "technolab"
 #define WIFI_PASSWORD "12345678"
 
-#define DATABASE_URL "xxxxxxxxxxxxxxxxxxxxxxxxxx"
-#define API_KEY "xxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+#define DATABASE_URL "https://vehicle-tracking-system-baac1-default-rtdb.asia-southeast1.firebasedatabase.app/"
+#define API_KEY "AIzaSyA1-eCoOIz0a2cxDe3LsMV3aG_e-7Ioyug"
 
 // --- PIN CONFIGURATION ---
 #define RXD2 16
