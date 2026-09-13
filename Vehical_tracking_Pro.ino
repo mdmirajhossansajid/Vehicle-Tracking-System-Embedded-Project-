@@ -43,6 +43,13 @@ void setup() {
   display.clearDisplay();
   display.setTextColor(SH110X_WHITE);
   display.setTextSize(1);
+  
+  // --- STAGE 1: BOOT & WANTS WIFI ---
+  display.setCursor(0, 10);
+  display.println("Vehical SYSTEM");
+  display.println("---------------------");
+  display.println("WiFi: Connecting...");
+  display.display();
 
 }
 void loop() {
