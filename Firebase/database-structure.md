@@ -1,14 +1,14 @@
 # ☁️ Firebase Realtime Database Structure
 
-This document describes the Firebase Realtime Database structure used by the **Vehicle Tracking System**.
+This document describes the Firebase Realtime Database structure implemented by the ESP32 firmware.
 
-The ESP32 sends GPS information to Firebase through Wi-Fi using the **Firebase Realtime Database**.
+The ESP32 collects GPS data, displays the information on an SH1106 OLED, and uploads tracking data to Firebase Realtime Database over Wi-Fi.
 
 ---
 
 ## 🌳 Database Structure
 
-The database contains three main sections:
+The firmware writes data to exactly three locations:
 
 ```text
 /
@@ -20,35 +20,49 @@ The database contains three main sections:
 │   └── timestamp
 │
 ├── history
-│   ├── -Oxxxxxxxxxxxx
-│   │   ├── lat
-│   │   ├── lng
-│   │   ├── speed
-│   │   ├── sats
-│   │   └── timestamp
-│   │
-│   ├── -Oyyyyyyyyyyyy
-│   │   └── ...
-│   │
-│   └── ...
+│   └── <Firebase-generated-key>
+│       ├── lat
+│       ├── lng
+│       ├── speed
+│       ├── sats
+│       └── timestamp
 │
 └── status
     └── heartbeat
 ```
 
+> The firmware does not create any other Firebase database paths.
+
 ---
 
-# 📍 1. Live GPS Data
+# 📍 `/gps` — Live Vehicle Data
 
-The current vehicle location is stored at:
+The `/gps` node stores the **latest valid GPS information** of the vehicle.
+
+The firmware updates this node using:
+
+```cpp
+Firebase.RTDB.setJSON(
+    &firebaseData,
+    "/gps",
+    &json
+);
+```
+
+Because `setJSON()` is used, the previous `/gps` object is replaced with the latest object.
+
+### Structure
 
 ```text
 /gps
+├── lat
+├── lng
+├── speed
+├── sats
+└── timestamp
 ```
 
-The ESP32 updates this location approximately every **2 seconds**.
-
-### Data Structure
+### Example
 
 ```json
 {
@@ -56,137 +70,148 @@ The ESP32 updates this location approximately every **2 seconds**.
   "lng": 90.412521,
   "speed": 25.4,
   "sats": 8,
-  "timestamp": 1727000000000
+  "timestamp": {
+    ".sv": "timestamp"
+  }
 }
 ```
+
+Firebase resolves the server timestamp when the data is written.
 
 ### Fields
 
-| Field       | Type             | Description                    |
-| ----------- | ---------------- | ------------------------------ |
-| `lat`       | Float            | Current latitude               |
-| `lng`       | Float            | Current longitude              |
-| `speed`     | Float            | Vehicle speed in km/h          |
-| `sats`      | Integer          | Number of connected satellites |
-| `timestamp` | Server Timestamp | Firebase server-side timestamp |
-
-### Example
-
-```text
-/gps
-    ├── lat       → 23.810331
-    ├── lng       → 90.412521
-    ├── speed     → 25.4
-    ├── sats      → 8
-    └── timestamp → Firebase Server Timestamp
-```
+| Field       | Type             | Source in Code           | Description                    |
+| ----------- | ---------------- | ------------------------ | ------------------------------ |
+| `lat`       | Float            | `gps.location.lat()`     | Current latitude               |
+| `lng`       | Float            | `gps.location.lng()`     | Current longitude              |
+| `speed`     | Float            | `filteredSpeed`          | Filtered speed in km/h         |
+| `sats`      | Integer          | `gps.satellites.value()` | Number of satellites           |
+| `timestamp` | Server timestamp | `timestamp/.sv`          | Firebase server-side timestamp |
 
 ---
 
-# 🧭 2. Movement History
+# 🧭 `/history` — Vehicle Movement History
 
-Historical tracking data is stored at:
+The `/history` node stores GPS records while the vehicle is moving.
+
+The firmware uses:
+
+```cpp
+Firebase.RTDB.pushJSON(
+    &firebaseData,
+    "/history",
+    &json
+);
+```
+
+Because `pushJSON()` is used, Firebase automatically generates a unique child key for every record.
+
+### Structure
 
 ```text
 /history
+├── <Firebase-generated-key-1>
+│   ├── lat
+│   ├── lng
+│   ├── speed
+│   ├── sats
+│   └── timestamp
+│
+├── <Firebase-generated-key-2>
+│   ├── lat
+│   ├── lng
+│   ├── speed
+│   ├── sats
+│   └── timestamp
+│
+└── ...
 ```
-
-Unlike `/gps`, which contains only the **latest location**, `/history` contains multiple GPS records.
-
-The ESP32 uses Firebase `pushJSON()` to create a unique key for each history record.
 
 ### Example
-
-```text
-/history
-    │
-    ├── -Oabc123
-    │     ├── lat
-    │     ├── lng
-    │     ├── speed
-    │     ├── sats
-    │     └── timestamp
-    │
-    ├── -Odef456
-    │     ├── lat
-    │     ├── lng
-    │     ├── speed
-    │     ├── sats
-    │     └── timestamp
-    │
-    └── ...
-```
-
-### Example History Record
 
 ```json
 {
-  "lat": 23.810331,
-  "lng": 90.412521,
-  "speed": 25.4,
-  "sats": 8,
-  "timestamp": 1727000000000
+  "history": {
+    "-OExampleKey001": {
+      "lat": 23.810331,
+      "lng": 90.412521,
+      "speed": 25.4,
+      "sats": 8,
+      "timestamp": {
+        ".sv": "timestamp"
+      }
+    }
+  }
 }
 ```
 
+The actual Firebase-generated keys will be different.
+
 ---
 
-# 🚗 History Recording Logic
+# 🚗 When Is History Saved?
 
-The system does **not** create a history record when the vehicle is stationary.
-
-The code checks:
+The firmware only pushes a history record when:
 
 ```cpp
-if (filteredSpeed > 0.0) {
-    Firebase.RTDB.pushJSON(
-        &firebaseData,
-        "/history",
-        &json
-    );
-}
+if (filteredSpeed > 0.0)
 ```
 
 Therefore:
 
 ```text
-                 GPS Data
-                    │
-                    ▼
-              Speed Filtering
-                    │
-                    ▼
-             ┌──────────────┐
-             │ Speed > 0 ?  │
-             └──────┬───────┘
-                    │
-              ┌─────┴─────┐
-              │           │
-             YES          NO
-              │           │
-              ▼           ▼
-        Save History   No History
-              │
-              ▼
-       /history/{key}
+GPS Valid
+    │
+    ▼
+Speed Filtering
+    │
+    ▼
+filteredSpeed > 0 ?
+    │
+ ┌──┴──┐
+ │     │
+YES    NO
+ │     │
+ ▼     ▼
+Push   Do not
+History save history
 ```
 
-This reduces unnecessary history entries while the vehicle is stopped.
+The speed is filtered first:
+
+```cpp
+if (rawSpeed < 3.0) {
+    filteredSpeed = 0.0;
+}
+```
+
+Therefore, GPS speeds below `3.0 km/h` are treated as `0 km/h`, and those readings are **not added to `/history`**.
 
 ---
 
-# ❤️ 3. Device Heartbeat
+# ❤️ `/status/heartbeat` — Device Heartbeat
 
-The device heartbeat is stored at:
+The firmware updates:
 
 ```text
 /status/heartbeat
 ```
 
-The ESP32 periodically updates this value with its running time:
+using:
 
 ```cpp
-millis() / 1000
+Firebase.RTDB.setInt(
+    &firebaseData,
+    "/status/heartbeat",
+    millis() / 1000
+);
+```
+
+### Structure
+
+```text
+/status
+└── heartbeat
 ```
 
 ### Example
@@ -199,72 +224,25 @@ millis() / 1000
 }
 ```
 
-Here, `245` represents approximately **245 seconds since the ESP32 started**.
-
-The heartbeat can be used to determine whether the device is actively communicating with Firebase.
-
----
-
-# 🔄 Firebase Update Cycle
-
-The ESP32 follows this process:
-
-```text
-                 🛰️ GPS
-                   │
-                   ▼
-             Read GPS Data
-                   │
-                   ▼
-           Validate GPS Fix
-                   │
-                   ▼
-            Filter Speed
-                   │
-                   ▼
-             Create JSON
-                   │
-          ┌────────┼────────┐
-          │        │        │
-          ▼        ▼        ▼
-        /gps   /history  /status
-          │        │        │
-          │        │        └── heartbeat
-          │        │
-          │        └── Only when moving
-          │
-          └── Current location
-```
-
----
-
-# ⏱️ Update Frequency
-
-The Firebase update interval is configured as:
+The value represents:
 
 ```cpp
-const unsigned long UPDATE_INTERVAL = 2000;
+millis() / 1000
 ```
 
-Therefore, Firebase updates are attempted approximately every:
+which is the approximate number of seconds since the ESP32 started.
 
-```text
-2 seconds
-```
+### Important
 
-### Update Behavior
+This is **not a Firebase server timestamp**.
 
-| Data                | Update Condition                        |
-| ------------------- | --------------------------------------- |
-| `/gps`              | Every 2 seconds when Firebase is ready  |
-| `/history`          | Every 2 seconds while vehicle is moving |
-| `/status/heartbeat` | Every Firebase update cycle             |
+It is the ESP32's own uptime in seconds.
 
 ---
 
-# 🧱 JSON Object Used by ESP32
+# 📦 JSON Object Created by the Firmware
 
-The ESP32 creates a single JSON object:
+The firmware creates one `FirebaseJson` object:
 
 ```cpp
 json.clear();
@@ -274,10 +252,25 @@ json.add("lng", longitude);
 json.add("speed", filteredSpeed);
 json.add("sats", satellitesCount);
 
-json.set("timestamp/.sv", "timestamp");
+json.set(
+    "timestamp/.sv",
+    "timestamp"
+);
 ```
 
-This object is then used for both:
+So the GPS JSON structure is:
+
+```text
+{
+    lat
+    lng
+    speed
+    sats
+    timestamp
+}
+```
+
+This same JSON object is used for both:
 
 ```text
 /gps
@@ -286,51 +279,59 @@ This object is then used for both:
 and:
 
 ```text
-/history
+/history/<generated-key>
 ```
 
 ---
 
-# 🔐 Firebase Authentication
+# ⏱️ Firebase Update Timing
 
-The ESP32 uses Firebase authentication during startup.
-
-The project uses:
+The firmware defines:
 
 ```cpp
-Firebase.signUp(
-    &config,
-    &auth,
-    "",
-    ""
-);
+const unsigned long UPDATE_INTERVAL = 2000;
 ```
 
-This enables anonymous Firebase authentication when anonymous authentication is enabled in the Firebase project.
+Therefore, Firebase operations are attempted approximately every **2 seconds**.
+
+However, Firebase updates do **not** occur simply because 2 seconds have passed.
+
+The following conditions must be satisfied first:
+
+```text
+GPS location valid
+        │
+        ▼
+Satellite count >= 4
+        │
+        ▼
+Latitude/Longitude != 0
+        │
+        ▼
+2-second interval reached
+        │
+        ▼
+Firebase.ready()
+        │
+        ▼
+Firebase operations
+```
 
 ---
 
-# 🔗 Firebase Operations
+# 📡 Firebase Operations
 
-The project uses the following Firebase operations:
+During each Firebase update cycle, the firmware performs these operations:
 
-| Operation | Firebase Method | Purpose                     |
-| --------- | --------------- | --------------------------- |
-| Live GPS  | `setJSON()`     | Replace current `/gps` data |
-| History   | `pushJSON()`    | Create a new history record |
-| Heartbeat | `setInt()`      | Update device heartbeat     |
+### 1. History Upload
 
-### Live GPS
+Only when:
 
 ```cpp
-Firebase.RTDB.setJSON(
-    &firebaseData,
-    "/gps",
-    &json
-);
+filteredSpeed > 0.0
 ```
 
-### History
+Operation:
 
 ```cpp
 Firebase.RTDB.pushJSON(
@@ -340,7 +341,39 @@ Firebase.RTDB.pushJSON(
 );
 ```
 
-### Heartbeat
+---
+
+### 2. Live GPS Upload
+
+The latest GPS JSON is written to:
+
+```text
+/gps
+```
+
+using:
+
+```cpp
+Firebase.RTDB.setJSON(
+    &firebaseData,
+    "/gps",
+    &json
+);
+```
+
+This means `/gps` always represents the latest uploaded GPS state.
+
+---
+
+### 3. Heartbeat Update
+
+The ESP32 writes its uptime to:
+
+```text
+/status/heartbeat
+```
+
+using:
 
 ```cpp
 Firebase.RTDB.setInt(
@@ -352,73 +385,200 @@ Firebase.RTDB.setInt(
 
 ---
 
-# 📊 Data Flow Summary
+# 🔄 Complete Firebase Data Flow
 
 ```text
-GPS Module
-    │
-    │ Latitude
-    │ Longitude
-    │ Speed
-    │ Satellites
-    ▼
-ESP32
-    │
-    ├──────────────► OLED Display
-    │
-    ▼
-Wi-Fi
-    │
-    ▼
-Firebase Realtime Database
-    │
-    ├── /gps
-    │     └── Current vehicle state
-    │
-    ├── /history
-    │     └── Historical movement records
-    │
-    └── /status
-          └── Device heartbeat
+                  🛰️ GPS MODULE
+                       │
+                       ▼
+                GPS NMEA Data
+                       │
+                       ▼
+                  ⚡ ESP32
+                       │
+                       ▼
+                GPS Validation
+                       │
+              ┌────────┴────────┐
+              │                 │
+          Invalid             Valid
+              │                 │
+              ▼                 ▼
+       Searching GPS       Speed Filtering
+                                │
+                                ▼
+                         Create FirebaseJson
+                                │
+                                ▼
+                         Firebase.ready()?
+                                │
+                         ┌──────┴──────┐
+                         │             │
+                        YES            NO
+                         │             │
+                         ▼             ▼
+                  Firebase Update    Skip
+                         │
+          ┌──────────────┼──────────────┐
+          │              │              │
+          ▼              ▼              ▼
+       /history         /gps      /status/heartbeat
+          │              │              │
+    If moving       Latest data       ESP32 uptime
 ```
 
 ---
 
-# ⚠️ Security Considerations
+# 🧱 Actual Firebase Tree
 
-Do not store sensitive credentials directly in a public GitHub repository.
+After the device has been running, the database can look like:
 
-The following values should be kept private:
+```text
+ROOT
+│
+├── gps
+│   ├── lat: 23.810331
+│   ├── lng: 90.412521
+│   ├── speed: 25.4
+│   ├── sats: 8
+│   └── timestamp: <Firebase server timestamp>
+│
+├── history
+│   │
+│   ├── -OABC123...
+│   │   ├── lat: 23.810300
+│   │   ├── lng: 90.412400
+│   │   ├── speed: 21.8
+│   │   ├── sats: 7
+│   │   └── timestamp: <server timestamp>
+│   │
+│   ├── -ODEF456...
+│   │   ├── lat: 23.810331
+│   │   ├── lng: 90.412521
+│   │   ├── speed: 25.4
+│   │   ├── sats: 8
+│   │   └── timestamp: <server timestamp>
+│   │
+│   └── ...
+│
+└── status
+    └── heartbeat: 245
+```
+
+---
+
+# 🔐 Authentication
+
+The firmware initializes Firebase using the configured API key and Realtime Database URL.
+
+It attempts anonymous authentication with:
 
 ```cpp
-#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+Firebase.signUp(
+    &config,
+    &auth,
+    "",
+    ""
+);
+```
+
+Anonymous authentication must be enabled in the Firebase project for this approach to work.
+
+---
+
+# 🔑 Configuration
+
+The firmware requires:
+
+```cpp
+#define DATABASE_URL "YOUR_FIREBASE_DATABASE_URL"
 #define API_KEY "YOUR_FIREBASE_API_KEY"
 ```
 
-For the public repository, use placeholder values or a separate private configuration file.
+For Wi-Fi:
+
+```cpp
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+```
+
+### ⚠️ Security
+
+Do not commit real Wi-Fi passwords or private configuration values to a public GitHub repository.
+
+Use placeholders in the public source code:
+
+```cpp
+#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_PASSWORD "YOUR_WIFI_PASSWORD"
+#define DATABASE_URL "YOUR_FIREBASE_DATABASE_URL"
+#define API_KEY "YOUR_FIREBASE_API_KEY"
+```
 
 ---
 
-# 📝 Summary
+# 📌 Firebase Path Summary
 
-The Firebase database is organized into three logical areas:
+| Firebase Path       | Method       | Purpose          | Condition                        |
+| ------------------- | ------------ | ---------------- | -------------------------------- |
+| `/gps`              | `setJSON()`  | Latest GPS data  | Firebase ready + valid GPS       |
+| `/history`          | `pushJSON()` | Movement history | Firebase ready + vehicle moving  |
+| `/status/heartbeat` | `setInt()`   | ESP32 uptime     | Firebase ready + update interval |
+
+---
+
+# ✅ Firmware-to-Database Mapping
+
+```text
+GPS
+│
+├── gps.location.lat()
+│       └──────────────► /gps/lat
+│                         /history/<key>/lat
+│
+├── gps.location.lng()
+│       └──────────────► /gps/lng
+│                         /history/<key>/lng
+│
+├── filteredSpeed
+│       └──────────────► /gps/speed
+│                         /history/<key>/speed
+│
+├── gps.satellites.value()
+│       └──────────────► /gps/sats
+│                         /history/<key>/sats
+│
+└── Firebase Server Timestamp
+        └──────────────► /gps/timestamp
+                          /history/<key>/timestamp
+
+
+millis() / 1000
+        └──────────────► /status/heartbeat
+```
+
+---
+
+## 📝 Summary
+
+The current firmware uses a simple three-part Firebase structure:
 
 ```text
 /gps
 ```
 
-Stores the **latest vehicle location and status**.
+Stores the **latest uploaded GPS state**.
 
 ```text
 /history
 ```
 
-Stores **historical GPS records while the vehicle is moving**.
+Stores **individual movement records with Firebase-generated keys**.
 
 ```text
 /status/heartbeat
 ```
 
-Stores the **device heartbeat for connectivity monitoring**.
+Stores the **ESP32 uptime value** used as a basic device heartbeat.
 
-This structure keeps live data, historical data, and device status logically separated and makes the system easier to extend in the future.
+This documentation directly reflects the Firebase paths and write operations implemented in the current ESP32 firmware.
